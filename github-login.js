@@ -1,11 +1,16 @@
 /* GitHub sign-in through Supabase for Goyame.
    Only the public project URL and publishable key are here (safe in browser code).
-   The GitHub Client Secret lives only in the Supabase dashboard, never in this file. */
+   The GitHub Client Secret lives only in the Supabase dashboard, never in this file.
+
+   After GitHub verifies the allowed account, the person goes straight in (no password step).
+   The password login stays exactly as it was. The first time after this update (or after the password
+   is changed) the password is asked once so the two logins can share the same saved data. */
 (function () {
     var SUPABASE_URL = "https://vgqeystxgtllkyqcnper.supabase.co";
     var SUPABASE_KEY = "sb_publishable_VBSHCNzOk9eBW1sSlNgHTA_1maHSou3";
     var ALLOWED_GITHUB_USER = "xifarabi";   // only this GitHub account may continue
     var ALLOWED_GITHUB_ID = "349310937";
+    var LINK_KEY = "goyame_ghlink";
 
     var client = null;
     var ready = null;
@@ -52,13 +57,65 @@
         return session;
     }
 
+    /* ---- link between the password login and the GitHub login ---- */
+    function toHex(buf) {
+        return Array.from(new Uint8Array(buf)).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+    }
+    function fromHex(h) {
+        return new Uint8Array(h.match(/../g).map(function (x) { return parseInt(x, 16); }));
+    }
+    function linkKey() { return vaultDeriveKey("ghlink|" + ALLOWED_GITHUB_ID); }
+
+    // Called after a normal password sign-in: remember the saved-data key so GitHub login can open it.
+    async function linkSave(pwKey) {
+        try {
+            var rec = pwLoad();
+            if (!rec) return;
+            var raw = await crypto.subtle.exportKey("raw", pwKey);
+            var sealed = await vEnc(await linkKey(), new Uint8Array(raw));
+            localStorage.setItem(LINK_KEY, JSON.stringify({ h: rec.hash, w: toHex(sealed) }));
+        } catch (e) {}
+    }
+
+    // Returns the saved-data key, or null if the password has to be entered once.
+    async function linkOpen() {
+        try {
+            var rec = pwLoad();
+            if (!rec) return null;
+            var o = JSON.parse(localStorage.getItem(LINK_KEY) || "null");
+            if (!o || o.h !== rec.hash) return null;
+            var raw = await vDec(await linkKey(), fromHex(o.w));
+            var key = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
+            if (!(await vaultCanOpen(key))) return null;
+            return key;
+        } catch (e) { return null; }
+    }
+
+    var origSignedIn = window.onSignedIn;
+    if (typeof origSignedIn === "function") {
+        window.onSignedIn = function (pwKey, viaGithub) {
+            if (!viaGithub) linkSave(pwKey);
+            return origSignedIn(pwKey);
+        };
+    }
+
+    // GitHub account is verified: go in directly, or ask the password just once to link the two logins.
+    async function proceedAfterGithub() {
+        var key = await linkOpen();
+        if (key && typeof origSignedIn === "function") {
+            window.onSignedIn(key, true);
+            return;
+        }
+        toast("GitHub Verified", "Enter your password once. After that, GitHub login goes straight in.", "ok");
+        if (typeof authOpenAdmin === "function") authOpenAdmin();
+    }
+
     // Replaces the "Coming Soon" stub in index.html
     window.loginGithub = async function () {
         try {
             var session = await currentVerifiedSession();
             if (session) {
-                toast("GitHub Verified", "Now enter your password to continue.", "ok");
-                if (typeof authOpenAdmin === "function") authOpenAdmin();
+                await proceedAfterGithub();
                 return;
             }
             var c = await loadClient();
@@ -72,13 +129,24 @@
         }
     };
 
-    // After GitHub sends the person back, check the account right away.
+    // After GitHub sends the person back: check the account, wait for the login page, then continue.
     if (/[?#&](code|access_token|error)=/.test(window.location.search + window.location.hash)) {
         loadClient().then(function () {
             return currentVerifiedSession();
         }).then(function (s) {
-            if (s) toast("GitHub Verified", "Open Login and tap Continue with GitHub to go on.", "ok");
             if (window.history && history.replaceState) history.replaceState(null, "", window.location.pathname);
+            if (!s) return;
+            var tries = 0;
+            var timer = setInterval(function () {
+                var page = document.getElementById("login");
+                tries++;
+                if (page && !page.classList.contains("hidden")) {
+                    clearInterval(timer);
+                    proceedAfterGithub();
+                } else if (tries > 50) {
+                    clearInterval(timer);
+                }
+            }, 300);
         }).catch(function () {});
     }
 })();
