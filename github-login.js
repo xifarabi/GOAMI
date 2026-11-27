@@ -3,7 +3,7 @@
    The GitHub Client Secret lives only in the Supabase dashboard, never in this file.
 
    GitHub login: once GitHub verifies the allowed account, the person goes straight to the home page
-   (no password). The admin password is only asked for the locked Admin page. */
+   (no password). The locked admin tools live in their own file, admin.html. */
 (function () {
     var SUPABASE_URL = "https://vgqeystxgtllkyqcnper.supabase.co";
     var SUPABASE_KEY = "sb_publishable_VBSHCNzOk9eBW1sSlNgHTA_1maHSou3";
@@ -109,5 +109,28 @@
             setTimeout(go, 2000);
             loadClient().then(function (c) { return c.auth.signOut(); }).then(go, go);
         };
+    }
+
+    /* ---- Admin tools live in admin.html: the home page only links to them ---- */
+    if (!window.__ADMIN_PAGE) {
+        // Every locked item (Code button, Background) now opens the admin file.
+        window.codeGateOpen = function () { location.href = "admin.html"; };
+
+        try {
+            // The Code button becomes the Admin button.
+            var btn = document.querySelector(".circle-btn.s-code");
+            if (btn) {
+                btn.setAttribute("aria-label", "Admin (password required)");
+                var ic = btn.querySelector("svg");
+                if (ic) ic.innerHTML = '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>';
+                var lbl = btn.parentNode.querySelector("span:not(.admin-badge)");
+                if (lbl) lbl.textContent = "Admin";
+            }
+            // Background and Admin Password are admin-only, so they leave Settings.
+            ["background", "admin"].forEach(function (v) {
+                var tile = document.querySelector('#viewMain .set-tile[data-view="' + v + '"]');
+                if (tile) tile.parentNode.removeChild(tile);
+            });
+        } catch (e) {}
     }
 })();
