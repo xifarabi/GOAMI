@@ -42,13 +42,34 @@
         try { showToast(title, msg, kind); } catch (e) { alert(title + ": " + msg); }
     }
 
+    // Remove every saved Supabase sign-in from this browser (works even without internet).
+    function clearLocalAuth() {
+        try {
+            var keys = [];
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && k.indexOf("sb-") === 0) keys.push(k);
+            }
+            keys.forEach(function (k) { localStorage.removeItem(k); });
+        } catch (e) {}
+        try {
+            var skeys = [];
+            for (var j = 0; j < sessionStorage.length; j++) {
+                var sk = sessionStorage.key(j);
+                if (sk && sk.indexOf("sb-") === 0) skeys.push(sk);
+            }
+            skeys.forEach(function (k) { sessionStorage.removeItem(k); });
+        } catch (e) {}
+    }
+
     async function currentVerifiedSession() {
         var c = await loadClient();
         var r = await c.auth.getSession();
         var session = r && r.data && r.data.session;
         if (!session) return null;
         if (!isAllowed(session.user)) {
-            await c.auth.signOut();
+            await c.auth.signOut({ scope: "local" });
+            clearLocalAuth();
             toast("Access Denied", "This GitHub account is not allowed to sign in.");
             return null;
         }
@@ -71,7 +92,11 @@
             var c = await loadClient();
             var res = await c.auth.signInWithOAuth({
                 provider: "github",
-                options: { redirectTo: window.location.origin + window.location.pathname }
+                options: {
+                    redirectTo: window.location.origin + window.location.pathname,
+                    // Make GitHub show its account chooser instead of silently re-using the last account.
+                    queryParams: { prompt: "select_account" }
+                }
             });
             if (res && res.error) throw res.error;
         } catch (e) {
@@ -100,14 +125,16 @@
         }).catch(function () {});
     }
 
-    // Log out also ends the GitHub session, so the next visit has to sign in again.
+    // Log out ends the saved GitHub sign-in in this browser first (local scope needs no network),
+    // so the next GitHub tap really starts a fresh sign-in.
     var origLogout = window.logout;
     if (typeof origLogout === "function") {
         window.logout = function () {
             var done = false;
-            function go() { if (done) return; done = true; origLogout(); }
-            setTimeout(go, 2000);
-            loadClient().then(function (c) { return c.auth.signOut(); }).then(go, go);
+            function go() { if (done) return; done = true; clearLocalAuth(); origLogout(); }
+            clearLocalAuth();
+            setTimeout(go, 1500);
+            loadClient().then(function (c) { return c.auth.signOut({ scope: "local" }); }).then(go, go);
         };
     }
 
@@ -117,14 +144,14 @@
         window.codeGateOpen = function () { location.href = "admin.html"; };
 
         try {
-            // The Code button becomes the Admin button.
+            // The Code button keeps its normal code icon and name; it still asks for the admin password first.
             var btn = document.querySelector(".circle-btn.s-code");
             if (btn) {
-                btn.setAttribute("aria-label", "Admin (password required)");
+                btn.setAttribute("aria-label", "Code (password required)");
                 var ic = btn.querySelector("svg");
-                if (ic) ic.innerHTML = '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>';
+                if (ic) ic.innerHTML = '<path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>';
                 var lbl = btn.parentNode.querySelector("span:not(.admin-badge)");
-                if (lbl) lbl.textContent = "Admin";
+                if (lbl) lbl.textContent = "Code";
             }
             // Background and Admin Password are admin-only, so they leave Settings.
             ["background", "admin"].forEach(function (v) {
