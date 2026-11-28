@@ -3,7 +3,11 @@
    The GitHub Client Secret lives only in the Supabase dashboard, never in this file.
 
    GitHub login: once GitHub verifies the allowed account, the person goes straight to the home page
-   (no password). The locked admin tools live in their own file, admin.html. */
+   (no password). The locked admin tools live in their own file, admin.html.
+
+   Safety: the allowed account is checked with the Supabase server (getUser), not only with data saved in
+   the browser. For full protection also switch OFF "Allow new users to sign up" in the Supabase dashboard
+   (Authentication), so no other GitHub account can ever create a user. */
 (function () {
     var SUPABASE_URL = "https://vgqeystxgtllkyqcnper.supabase.co";
     var SUPABASE_KEY = "sb_publishable_VBSHCNzOk9eBW1sSlNgHTA_1maHSou3";
@@ -42,6 +46,17 @@
         try { showToast(title, msg, kind); } catch (e) { alert(title + ": " + msg); }
     }
 
+    // Is there a saved Supabase sign-in in this browser? (cheap check, loads nothing)
+    function hasStoredAuth() {
+        try {
+            for (var i = 0; i < localStorage.length; i++) {
+                var k = localStorage.key(i);
+                if (k && k.indexOf("sb-") === 0 && k.indexOf("-auth-token") > 0) return true;
+            }
+        } catch (e) {}
+        return false;
+    }
+
     // Remove every saved Supabase sign-in from this browser (works even without internet).
     function clearLocalAuth() {
         try {
@@ -62,23 +77,50 @@
         } catch (e) {}
     }
 
+    async function rejectSession(c, message) {
+        try { await c.auth.signOut({ scope: "local" }); } catch (e) {}
+        clearLocalAuth();
+        if (message) toast("Access Denied", message);
+        return null;
+    }
+
+    // Returns the session only if the Supabase server confirms it AND it belongs to the allowed account.
     async function currentVerifiedSession() {
         var c = await loadClient();
         var r = await c.auth.getSession();
         var session = r && r.data && r.data.session;
         if (!session) return null;
-        if (!isAllowed(session.user)) {
-            await c.auth.signOut({ scope: "local" });
-            clearLocalAuth();
-            toast("Access Denied", "This GitHub account is not allowed to sign in.");
-            return null;
+        // Ask the Supabase server (not just the browser's saved copy) who this really is.
+        var u = await c.auth.getUser();
+        if (u && u.error) {
+            var st = u.error.status;
+            if (st === 401 || st === 403 || st === 404) return rejectSession(c, null);   // session is no longer valid
+            return null;                                                                  // offline / temporary problem: do not sign in
         }
+        var user = u && u.data && u.data.user;
+        if (!user) return rejectSession(c, null);
+        if (!isAllowed(user)) return rejectSession(c, "This GitHub account is not allowed to sign in.");
         return session;
     }
 
     // GitHub account is verified: go straight to the home page.
     function enterSite() {
         if (typeof onSignedIn === "function") onSignedIn(null);
+    }
+
+    // Wait until the login page is showing, then continue into the site.
+    function enterWhenLoginShows() {
+        var tries = 0;
+        var timer = setInterval(function () {
+            var page = document.getElementById("login");
+            tries++;
+            if (page && !page.classList.contains("hidden")) {
+                clearInterval(timer);
+                enterSite();
+            } else if (tries > 100) {
+                clearInterval(timer);
+            }
+        }, 300);
     }
 
     // Replaces the "Coming Soon" stub in index.html
@@ -104,24 +146,17 @@
         }
     };
 
-    // After GitHub sends the person back: check the account, wait for the login page, then continue.
-    if (/[?#&](code|access_token|error)=/.test(window.location.search + window.location.hash)) {
+    var returningFromGithub = /[?#&](code|access_token|error)=/.test(window.location.search + window.location.hash);
+
+    // After GitHub sends the person back, OR when the page is refreshed while still signed in with GitHub:
+    // check the account with the server, then continue straight into the site.
+    if (!window.__ADMIN_PAGE && (returningFromGithub || hasStoredAuth())) {
         loadClient().then(function () {
             return currentVerifiedSession();
         }).then(function (s) {
-            if (window.history && history.replaceState) history.replaceState(null, "", window.location.pathname);
+            if (returningFromGithub && window.history && history.replaceState) history.replaceState(null, "", window.location.pathname);
             if (!s) return;
-            var tries = 0;
-            var timer = setInterval(function () {
-                var page = document.getElementById("login");
-                tries++;
-                if (page && !page.classList.contains("hidden")) {
-                    clearInterval(timer);
-                    enterSite();
-                } else if (tries > 50) {
-                    clearInterval(timer);
-                }
-            }, 300);
+            enterWhenLoginShows();
         }).catch(function () {});
     }
 
