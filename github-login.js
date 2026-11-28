@@ -3,8 +3,9 @@
    The GitHub Client Secret lives only in the Supabase dashboard, never in this file.
 
    GitHub login: once GitHub verifies the allowed account, the person goes straight to the home page
-   (no password). Code, Background and Admin Password are back on the home page and in Settings, exactly
-   where they were, still locked by the admin password.
+   (no password). Code and Background open straight away with no password. Saved code is locked with a
+   built-in key, so it opens by itself. If this browser still has an old password with saved code, it is
+   asked for ONE time only, to move that saved code over; after that nothing asks for a password.
 
    Safety: the allowed account is checked with the Supabase server (getUser), not only with data saved in
    the browser. For full protection also keep "Allow new users to sign up" switched OFF in the Supabase
@@ -14,6 +15,7 @@
     var SUPABASE_KEY = "sb_publishable_VBSHCNzOk9eBW1sSlNgHTA_1maHSou3";
     var ALLOWED_GITHUB_USER = "xifarabi";   // only this GitHub account may continue
     var ALLOWED_GITHUB_ID = "349310937";
+    var NOPW_FLAG = "alle_vault_nopw";      // "1" once saved code uses the built-in key
 
     var client = null;
     var ready = null;
@@ -174,23 +176,88 @@
         };
     }
 
-    // The Code / Background password gate is the site's own. After a GitHub sign-in the saved code has no
-    // key yet, so when the right admin password is typed here the key is made too, and the code opens.
+    /* ---- No password for Code and Background ---- */
+    var fixedKey = null;
+    var fixedKeyP = null;
+    try {
+        fixedKeyP = vaultDeriveKey("nopassword|alle|v1").then(function (k) { fixedKey = k; return k; });
+    } catch (e) {}
+
+    function flagOn() {
+        try { return localStorage.getItem(NOPW_FLAG) === "1"; } catch (e) { return false; }
+    }
+    function flagSet() {
+        try { localStorage.setItem(NOPW_FLAG, "1"); } catch (e) {}
+    }
+
+    // true = saved code now opens with the built-in key; false = the old password is needed one time
+    async function useBuiltInKey() {
+        if (!fixedKeyP) return true;
+        var fixed = await fixedKeyP;
+        if (flagOn()) { vaultKey = fixed; return true; }
+        if (!pwLoad()) { flagSet(); vaultKey = fixed; return true; }   // no old password in this browser
+        return false;
+    }
+
+    // After any sign-in, saved code uses the built-in key once this browser has been moved over.
+    var origSignedIn = window.onSignedIn;
+    if (typeof origSignedIn === "function") {
+        window.onSignedIn = function (k) { return origSignedIn((fixedKey && flagOn()) ? fixedKey : k); };
+    }
+
+    window.codeGateOpen = async function (cb) {
+        var go = typeof cb === "function" ? cb : openCodePage;
+        try {
+            if (await useBuiltInKey()) { go(); return; }
+        } catch (e) { console.error(e); }
+        // One time only: the old password moves the saved code to the built-in key.
+        gateAction = go;
+        var b = document.getElementById("gateBox"), i = document.getElementById("gatePass");
+        var note = document.querySelector("#gateBox p");
+        if (note) note.textContent = "One time only: enter your old password to move your saved code. After this, nothing will ask for a password.";
+        i.value = ""; b.classList.remove("hidden");
+        setTimeout(function () { i.focus(); }, 50);
+    };
+
     window.codeGateSubmit = async function () {
         var i = document.getElementById("gatePass"), pw = i.value;
         if (!pw) { toast("Enter Password", "Please enter your password."); return; }
         try {
             var rec = pwLoad();
             if (!rec || (await pwHash(pw, rec.salt)) !== rec.hash) { toast("Wrong Password", "Check it and try again."); return; }
-            if (!vaultKey) {
-                vaultKey = await vaultDeriveKey("pwlogin|" + pw);
-                sessionSave(vaultKey);
-                vaultMigrate().catch(function (e) { console.error(e); });
+            var oldKey = await vaultDeriveKey("pwlogin|" + pw);
+            var newKey = await fixedKeyP;
+            // open everything with the old key and lock it with the built-in key, all or nothing
+            var out = { codes: [], files: [] };
+            var any = false;
+            var stores = ["codes", "files"];
+            for (var s = 0; s < stores.length; s++) {
+                var st = stores[s];
+                var rows = await cvRawDb(st, "readonly", function (x) { return x.getAll(); });
+                for (var r = 0; r < rows.length; r++) {
+                    var item;
+                    try { item = await vOpenRec(st, rows[r], oldKey, true); } catch (e) { continue; }   // could not open: leave it as it is
+                    out[st].push(await vSeal(st, item, newKey));
+                    any = true;
+                }
             }
+            if (any) await cvRawBatch(out);
+            flagSet();
+            vaultKey = newKey;
+            sessionSave(newKey);
             codeGateClose();
             var go = gateAction || openCodePage;
             gateAction = null;
             go();
-        } catch (e) { authFail(e); }
+        } catch (e) {
+            console.error(e);
+            toast("Not Done", "Your saved code could not be moved. Nothing was changed.");
+        }
     };
+
+    // The Admin Password setting is not needed any more.
+    try {
+        var tile = document.querySelector('#viewMain .set-tile[data-view="admin"]');
+        if (tile) tile.parentNode.removeChild(tile);
+    } catch (e) {}
 })();
