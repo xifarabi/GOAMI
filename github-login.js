@@ -6,6 +6,7 @@
    (no password). Code and Background open straight away with no password. Saved code is locked with a
    built-in key, so it opens by itself. If this browser still has an old password with saved code, it is
    asked for ONE time only, to move that saved code over; after that nothing asks for a password.
+   The password login button, password form and lock icons are removed from the screen.
 
    Safety: the allowed account is checked with the Supabase server (getUser), not only with data saved in
    the browser. For full protection also keep "Allow new users to sign up" switched OFF in the Supabase
@@ -257,9 +258,13 @@
         }
     };
 
-    // The Admin Password setting is not needed any more.
+    /* ---- The admin password feature is gone: take its login button, form, setting and lock icons off the screen ---- */
     try {
-        var tile = document.querySelector('#viewMain .set-tile[data-view="admin"]');
-        if (tile) tile.parentNode.removeChild(tile);
+        [".auth-btn.em", "#authForm", ".admin-badge", '#viewMain .set-tile[data-view="admin"]'].forEach(function (sel) {
+            var nodes = document.querySelectorAll(sel);
+            for (var n = 0; n < nodes.length; n++) if (nodes[n].parentNode) nodes[n].parentNode.removeChild(nodes[n]);
+        });
+        var note2 = document.getElementById("authNote");
+        if (note2) note2.textContent = "Sign in with GitHub to continue.";
     } catch (e) {}
 })();
