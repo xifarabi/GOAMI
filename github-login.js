@@ -8,6 +8,9 @@
    asked for ONE time only, to move that saved code over; after that nothing asks for a password.
    The password login button, password form and lock icons are removed from the screen.
 
+   While GitHub sign-in is being checked, the site's own loading animation stays on screen for exactly as
+   long as the check takes (and a safety limit), then the home page opens.
+
    Safety: the allowed account is checked with the Supabase server (getUser), not only with data saved in
    the browser. For full protection also keep "Allow new users to sign up" switched OFF in the Supabase
    dashboard (Authentication) once your own account has signed in once. */
@@ -49,6 +52,10 @@
     function toast(title, msg, kind) {
         try { showToast(title, msg, kind); } catch (e) { alert(title + ": " + msg); }
     }
+
+    // The site's own loading animation (shown for as long as the sign-in check needs).
+    function loaderOn() { try { showLoader(); } catch (e) {} }
+    function loaderOff() { try { hideLoader(); } catch (e) {} }
 
     // Is there a saved Supabase sign-in in this browser? (cheap check, loads nothing)
     function hasStoredAuth() {
@@ -114,6 +121,7 @@
 
     // Replaces the "Coming Soon" stub in index.html
     window.loginGithub = async function () {
+        loaderOn();   // loading animation while the account is checked / GitHub opens
         try {
             var session = await currentVerifiedSession();
             if (session) {
@@ -130,7 +138,9 @@
                 }
             });
             if (res && res.error) throw res.error;
+            // the browser is now leaving for GitHub: the loading animation stays until the page changes
         } catch (e) {
+            loaderOff();
             toast("Something Went Wrong", (e && e.message) || "Please try again.");
         }
     };
@@ -149,8 +159,26 @@
     // Opening the site (after GitHub sends the person back, or on a refresh while still signed in):
     // the site's own start-up asks "is someone already signed in?". For a verified GitHub account the answer
     // is yes, so the person goes straight to the home page, with no welcome text and no login page flash.
+    // The loading animation is held on screen until that check is finished (20 second safety limit).
     var origRestore = window.sessionRestore;
+    var origHide = window.hideLoader;
+    var holding = false;
+    var holdTimer = null;
+    function releaseLoader() {
+        if (!holding) return;
+        holding = false;
+        clearTimeout(holdTimer);
+        try { origHide(); } catch (e) {}
+    }
     if (typeof origRestore === "function" && (returningFromGithub || hasStoredAuth())) {
+        if (typeof origHide === "function") {
+            holding = true;
+            window.hideLoader = function () {
+                if (holding) return;
+                return origHide.apply(this, arguments);
+            };
+            holdTimer = setTimeout(releaseLoader, 20000);
+        }
         window.sessionRestore = async function () {
             try {
                 if (await origRestore()) return true;
@@ -162,6 +190,7 @@
                 }
                 if (returnError) toast("GitHub Sign-in Failed", String(returnError).replace(/\+/g, " "));
             } catch (e) { console.error(e); }
+            finally { setTimeout(releaseLoader, 0); }   // open the page first, then take the loading animation off
             return false;
         };
     }
@@ -173,6 +202,7 @@
         window.logout = function () {
             var done = false;
             function go() { if (done) return; done = true; clearLocalAuth(); origLogout(); }
+            loaderOn();
             clearLocalAuth();
             setTimeout(go, 1500);
             loadClient().then(function (c) { return c.auth.signOut({ scope: "local" }); }).then(go, go);
