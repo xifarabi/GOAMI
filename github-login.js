@@ -3,11 +3,12 @@
    The GitHub Client Secret lives only in the Supabase dashboard, never in this file.
 
    GitHub login: once GitHub verifies the allowed account, the person goes straight to the home page
-   (no password). The locked admin tools live in their own file, admin.html.
+   (no password). Code, Background and Admin Password are back on the home page and in Settings, exactly
+   where they were, still locked by the admin password.
 
    Safety: the allowed account is checked with the Supabase server (getUser), not only with data saved in
-   the browser. For full protection also switch OFF "Allow new users to sign up" in the Supabase dashboard
-   (Authentication), so no other GitHub account can ever create a user. */
+   the browser. For full protection also keep "Allow new users to sign up" switched OFF in the Supabase
+   dashboard (Authentication) once your own account has signed in once. */
 (function () {
     var SUPABASE_URL = "https://vgqeystxgtllkyqcnper.supabase.co";
     var SUPABASE_KEY = "sb_publishable_VBSHCNzOk9eBW1sSlNgHTA_1maHSou3";
@@ -150,7 +151,7 @@
 
     // After GitHub sends the person back, OR when the page is refreshed while still signed in with GitHub:
     // check the account with the server, then continue straight into the site.
-    if (!window.__ADMIN_PAGE && (returningFromGithub || hasStoredAuth())) {
+    if (returningFromGithub || hasStoredAuth()) {
         loadClient().then(function () {
             return currentVerifiedSession();
         }).then(function (s) {
@@ -173,26 +174,23 @@
         };
     }
 
-    /* ---- Admin tools live in admin.html: the home page only links to them ---- */
-    if (!window.__ADMIN_PAGE) {
-        // Every locked item (Code button, Background) now opens the admin file.
-        window.codeGateOpen = function () { location.href = "admin.html"; };
-
+    // The Code / Background password gate is the site's own. After a GitHub sign-in the saved code has no
+    // key yet, so when the right admin password is typed here the key is made too, and the code opens.
+    window.codeGateSubmit = async function () {
+        var i = document.getElementById("gatePass"), pw = i.value;
+        if (!pw) { toast("Enter Password", "Please enter your password."); return; }
         try {
-            // The Code button keeps its normal code icon and name; it still asks for the admin password first.
-            var btn = document.querySelector(".circle-btn.s-code");
-            if (btn) {
-                btn.setAttribute("aria-label", "Code (password required)");
-                var ic = btn.querySelector("svg");
-                if (ic) ic.innerHTML = '<path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>';
-                var lbl = btn.parentNode.querySelector("span:not(.admin-badge)");
-                if (lbl) lbl.textContent = "Code";
+            var rec = pwLoad();
+            if (!rec || (await pwHash(pw, rec.salt)) !== rec.hash) { toast("Wrong Password", "Check it and try again."); return; }
+            if (!vaultKey) {
+                vaultKey = await vaultDeriveKey("pwlogin|" + pw);
+                sessionSave(vaultKey);
+                vaultMigrate().catch(function (e) { console.error(e); });
             }
-            // Background and Admin Password are admin-only, so they leave Settings.
-            ["background", "admin"].forEach(function (v) {
-                var tile = document.querySelector('#viewMain .set-tile[data-view="' + v + '"]');
-                if (tile) tile.parentNode.removeChild(tile);
-            });
-        } catch (e) {}
-    }
+            codeGateClose();
+            var go = gateAction || openCodePage;
+            gateAction = null;
+            go();
+        } catch (e) { authFail(e); }
+    };
 })();
