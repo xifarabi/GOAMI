@@ -111,21 +111,6 @@
         if (typeof onSignedIn === "function") onSignedIn(null);
     }
 
-    // Wait until the login page is showing, then continue into the site.
-    function enterWhenLoginShows() {
-        var tries = 0;
-        var timer = setInterval(function () {
-            var page = document.getElementById("login");
-            tries++;
-            if (page && !page.classList.contains("hidden")) {
-                clearInterval(timer);
-                enterSite();
-            } else if (tries > 100) {
-                clearInterval(timer);
-            }
-        }, 300);
-    }
-
     // Replaces the "Coming Soon" stub in index.html
     window.loginGithub = async function () {
         try {
@@ -151,16 +136,33 @@
 
     var returningFromGithub = /[?#&](code|access_token|error)=/.test(window.location.search + window.location.hash);
 
-    // After GitHub sends the person back, OR when the page is refreshed while still signed in with GitHub:
-    // check the account with the server, then continue straight into the site.
-    if (returningFromGithub || hasStoredAuth()) {
-        loadClient().then(function () {
-            return currentVerifiedSession();
-        }).then(function (s) {
-            if (returningFromGithub && window.history && history.replaceState) history.replaceState(null, "", window.location.pathname);
-            if (!s) return;
-            enterWhenLoginShows();
-        }).catch(function () {});
+    // If GitHub sent back an error (for example "Signups not allowed"), say so instead of looping silently.
+    function githubReturnError() {
+        try {
+            var q = new URLSearchParams(window.location.search + "&" + window.location.hash.replace(/^#/, ""));
+            return q.get("error_description") || (q.get("error") ? "GitHub sign-in did not finish." : "");
+        } catch (e) { return ""; }
+    }
+    var returnError = returningFromGithub ? githubReturnError() : "";
+
+    // Opening the site (after GitHub sends the person back, or on a refresh while still signed in):
+    // the site's own start-up asks "is someone already signed in?". For a verified GitHub account the answer
+    // is yes, so the person goes straight to the home page, with no welcome text and no login page flash.
+    var origRestore = window.sessionRestore;
+    if (typeof origRestore === "function" && (returningFromGithub || hasStoredAuth())) {
+        window.sessionRestore = async function () {
+            try {
+                if (await origRestore()) return true;
+                var s = await currentVerifiedSession();
+                if (returningFromGithub && window.history && history.replaceState) history.replaceState(null, "", window.location.pathname);
+                if (s) {
+                    if (fixedKey && flagOn()) vaultKey = fixedKey;
+                    return true;
+                }
+                if (returnError) toast("GitHub Sign-in Failed", String(returnError).replace(/\+/g, " "));
+            } catch (e) { console.error(e); }
+            return false;
+        };
     }
 
     // Log out ends the saved GitHub sign-in in this browser first (local scope needs no network),
